@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import logging
 import os
-
 import cv2
 import numpy as np
 import tensorflow as tf
 from vgg import vgg_16
-
+from object_detection.utils import dataset_util
+import sys
+sys.path.insert(0, '/home/tf/tensorflow/quiz_object_detection')
 
 flags = tf.app.flags
 flags.DEFINE_string('data_dir', '', 'Root directory to raw pet dataset.')
@@ -46,19 +47,23 @@ def dict_to_tf_example(data, label):
     img_mask = image2label(img_label)
     encoded_label = img_mask.astype(np.uint8).tobytes()
 
+    path_data, filename_data = os.path.split(data)
+
     height, width = img_label.shape[0], img_label.shape[1]
     if height < vgg_16.default_image_size or width < vgg_16.default_image_size:
         # 保证最后随机裁剪的尺寸
         return None
-
+    
     # Your code here, fill the dict
+
     feature_dict = {
-        'image/height': None,
-        'image/width': None,
-        'image/filename': None,
-        'image/encoded': None,
-        'image/label': None,
-        'image/format': None,
+        'image/height': dataset_util.int64_feature(height),
+        'image/width': dataset_util.int64_feature(width),
+        'image/filename': dataset_util.bytes_feature(
+            filename_data.encode('utf8')),
+        'image/encoded': dataset_util.bytes_feature(encoded_data),
+        'image/label': dataset_util.bytes_feature(encoded_label),
+        'image/format': dataset_util.bytes_feature('jpeg'.encode('utf8')),
     }
     example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
     return example
@@ -66,7 +71,23 @@ def dict_to_tf_example(data, label):
 
 def create_tf_record(output_filename, file_pars):
     # Your code here
-    pass
+
+    writer = tf.python_io.TFRecordWriter(output_filename)
+    for (data,label) in file_pars:
+        print(data, label)
+        if not os.path.exists(str(data)):
+            print('Could not find ', data, ', ignoring data.')
+            continue
+        if not os.path.exists(str(label)):
+            logging.warning('Could not find ', label, ', ignoring data.')
+            continue
+        try:
+            tf_example = dict_to_tf_example(data, label)
+            writer.write(tf_example.SerializeToString())
+        except:
+            logging.warning('Invalid example: ', data, ' and ', label, ', ignoring.')
+    writer.close()
+
 
 
 def read_images_names(root, train=True):
@@ -77,22 +98,29 @@ def read_images_names(root, train=True):
 
     data = []
     label = []
+    counter=0
+    countOfItems = len(images)//500
     for fname in images:
         data.append('%s/JPEGImages/%s.jpg' % (root, fname))
         label.append('%s/SegmentationClass/%s.png' % (root, fname))
-    return zip(data, label)
+        files = zip(data, label)
+        if counter % 500 == 0 and counter>0:
+            output_path = os.path.join(FLAGS.output_dir, 
+                'fcn_train_%05dof%05d.record'%(counter//500-1, countOfItems) if train else 'fcn_val_%05dof%05d.record'%(counter//500-1, countOfItems))
+            create_tf_record(output_path, files)
+            data = []
+            label = []
+        counter += 1
+        if counter==len(images):
+            output_path = os.path.join(FLAGS.output_dir, 
+                'fcn_train_%05dof%05d.record'%(counter//500, countOfItems) if train else 'fcn_val_%05dof%05d.record'%(counter//500, countOfItems))
+            create_tf_record(output_path, files)
 
 
 def main(_):
     logging.info('Prepare dataset file names')
-
-    train_output_path = os.path.join(FLAGS.output_dir, 'fcn_train.record')
-    val_output_path = os.path.join(FLAGS.output_dir, 'fcn_val.record')
-
-    train_files = read_images_names(FLAGS.data_dir, True)
-    val_files = read_images_names(FLAGS.data_dir, False)
-    create_tf_record(train_output_path, train_files)
-    create_tf_record(val_output_path, val_files)
+    read_images_names(FLAGS.data_dir, True)
+    read_images_names(FLAGS.data_dir, False)
 
 
 if __name__ == '__main__':
